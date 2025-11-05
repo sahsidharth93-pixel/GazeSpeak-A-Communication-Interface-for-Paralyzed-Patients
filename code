@@ -1,0 +1,256 @@
+# GazeSpeak-A-Communication-Interface-for-Paralyzed-Patients
+import os
+import time
+import queue
+import threading
+import math
+import cv2
+import mediapipe as mp
+import customtkinter as ctk
+from PIL import Image, ImageTk
+from gtts import gTTS
+import pyglet
+
+# =============== VOICE SYSTEM (Natasha) ===============
+class NatashaVoice:
+    def __init__(self):
+        self.voice_queue = queue.Queue()
+        self.voice_thread = threading.Thread(target=self._voice_player, daemon=True)
+        self.voice_thread.start()
+
+    def speak(self, text):
+        self.voice_queue.put(text)
+
+    def _voice_player(self):
+        while True:
+            text = self.voice_queue.get()
+            if text is None:
+                break
+            self._play_voice(text)
+            self.voice_queue.task_done()
+
+    def _play_voice(self, text):
+        try:
+            if os.path.exists("voice.mp3"):
+                os.remove("voice.mp3")
+        except:
+            pass
+
+        tts = gTTS(text=text, lang='en', tld='co.in')
+        tts.save("voice.mp3")
+        music = pyglet.media.load("voice.mp3", streaming=False)
+        music.play()
+        time.sleep(music.duration + 0.4)
+        try:
+            os.remove("voice.mp3")
+        except:
+            pass
+
+# =============== BLINK DETECTOR ===============
+class BlinkGazeDetector:
+    def __init__(self):
+        self.mp_face_mesh = mp.solutions.face_mesh
+        self.face_mesh = self.mp_face_mesh.FaceMesh(max_num_faces=1)
+        self.LEFT_EYE_IDX = [33, 160, 158, 133, 153, 144]
+        self.RIGHT_EYE_IDX = [362, 385, 387, 263, 373, 380]
+        self.blink_detected = False
+        self.blink_start_time = None
+
+    def eye_aspect_ratio(self, landmarks, eye_idx, w, h):
+        coords = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in eye_idx]
+        A = math.dist(coords[1], coords[5])
+        B = math.dist(coords[2], coords[4])
+        C = math.dist(coords[0], coords[3])
+        ear = (A + B) / (2.0 * C)
+        return ear
+
+    def detect_blink(self, frame):
+        h, w = frame.shape[:2]
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.face_mesh.process(rgb_frame)
+        blink_event = None
+
+        if results.multi_face_landmarks:
+            landmarks = results.multi_face_landmarks[0].landmark
+            left_ear = self.eye_aspect_ratio(landmarks, self.LEFT_EYE_IDX, w, h)
+            right_ear = self.eye_aspect_ratio(landmarks, self.RIGHT_EYE_IDX, w, h)
+            ear = (left_ear + right_ear) / 2.0
+
+            EAR_THRESHOLD = 0.25
+
+            if ear < EAR_THRESHOLD:
+                if not self.blink_detected:
+                    self.blink_detected = True
+                    self.blink_start_time = time.time()
+            else:
+                if self.blink_detected:
+                    duration = time.time() - self.blink_start_time
+                    self.blink_detected = False
+                    if duration < 0.4:
+                        blink_event = "single"
+                    elif duration < 0.8:
+                        blink_event = "double"
+                    else:
+                        blink_event = "long"
+        return blink_event
+
+# =============== MAIN APP ===============
+class GazeSpeakApp:
+    def __init__(self):
+        self.root = ctk.CTk()
+        self.root.title("Natasha GazeSpeak Assistant")
+        self.root.geometry("1280x720")
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
+        self.current_window = None
+
+        self.natasha = NatashaVoice()
+        self.detector = BlinkGazeDetector()
+        self._intro_voice()
+        self._build_main_menu()
+
+        # Start webcam
+        self.cap = cv2.VideoCapture(0)
+        self.root.after(10, self._process_frame)
+        self.root.mainloop()
+
+    # =============== Voice Intro ===============
+    def _intro_voice(self):
+        self.natasha.speak("Hi, I am Natasha, your AI assistant.")
+        self.natasha.speak("Blink once for Food, twice for Drinks, thrice for Other.")
+        self.natasha.speak("Long blink to confirm your selection.")
+
+    # =============== UI ===============
+    def _build_main_menu(self):
+        if self.current_window:
+            self.current_window.destroy()
+
+        frame = ctk.CTkFrame(self.root)
+        frame.pack(fill="both", expand=True)
+        self.current_window = frame
+
+        title = ctk.CTkLabel(frame, text="Natasha – GazeSpeak Assistant",
+                             font=("Helvetica", 32, "bold"))
+        title.pack(pady=30)
+
+        btn_frame = ctk.CTkFrame(frame)
+        btn_frame.pack(pady=60)
+
+        self._create_button(btn_frame, "Food", "images/food.png", self.open_food)
+        self._create_button(btn_frame, "Drinks", "images/drink.png", self.open_drinks)
+        self._create_button(btn_frame, "Other", "images/other.png", self.open_other)
+        self._create_button(btn_frame, "AI Chat", "images/ai.png", self.open_ai_chat)
+
+    def _create_button(self, parent, text, img_path, command):
+        try:
+            image = Image.open(img_path).resize((120, 120))
+            photo = ImageTk.PhotoImage(image)
+        except:
+            photo = None
+        btn = ctk.CTkButton(parent, text=text, image=photo, compound="top",
+                            width=200, height=180, font=("Helvetica", 20),
+                            command=lambda: self._open_section(text, command))
+        btn.pack(side="left", padx=30, pady=20)
+
+    def _open_section(self, name, command):
+        if self.current_window:
+            self.current_window.destroy()
+        self.natasha.speak(f"Opening {name} section.")
+        command()
+
+    # =============== Sections ===============
+    def open_food(self):
+        self._show_items("Hospital Food Menu 🍲", [
+            ("Soup", "images/soup.png"),
+            ("Idli Sambhar", "images/idli.png"),
+            ("Upma", "images/upma.png"),
+            ("Tea", "images/tea.png"),
+            ("Porridge", "images/porridge.png")
+        ])
+
+    def open_drinks(self):
+        self._show_items("Available Drinks 🥤", [
+            ("Water", "images/water.png"),
+            ("Juice", "images/juice.png"),
+            ("Milk", "images/milk.png"),
+            ("Tea", "images/tea.png"),
+        ])
+
+    def open_other(self):
+        self._show_items("Other Services 🛎️", [
+            ("Call Nurse", None),
+            ("Request Help", None),
+            ("Need Water", None),
+            ("Change TV Channel", None)
+        ])
+
+    def open_ai_chat(self):
+        frame = ctk.CTkFrame(self.root)
+        frame.pack(fill="both", expand=True)
+        self.current_window = frame
+
+        title = ctk.CTkLabel(frame, text="AI Assistant Natasha 🤖", font=("Helvetica", 28, "bold"))
+        title.pack(pady=20)
+
+        chat_box = ctk.CTkTextbox(frame, width=800, height=400)
+        chat_box.pack(pady=20)
+        chat_box.insert("end", "Natasha: Hello! How can I assist you today?\n\n")
+
+        def send_message():
+            msg = entry.get().strip()
+            if msg:
+                chat_box.insert("end", f"You: {msg}\n")
+                chat_box.insert("end", f"Natasha: That's interesting. I'm still learning!\n\n")
+                self.natasha.speak("That's interesting. I'm still learning!")
+                entry.delete(0, "end")
+
+        entry = ctk.CTkEntry(frame, width=600)
+        entry.pack(pady=10)
+        ctk.CTkButton(frame, text="Send", command=send_message).pack()
+        ctk.CTkButton(frame, text="Back", command=self._build_main_menu).pack(pady=20)
+
+    def _show_items(self, title_text, items):
+        frame = ctk.CTkFrame(self.root)
+        frame.pack(fill="both", expand=True)
+        self.current_window = frame
+
+        title = ctk.CTkLabel(frame, text=title_text, font=("Helvetica", 28, "bold"))
+        title.pack(pady=20)
+
+        grid = ctk.CTkFrame(frame)
+        grid.pack(pady=20)
+
+        for i, (name, img_path) in enumerate(items):
+            try:
+                if img_path:
+                    img = Image.open(img_path).resize((100, 100))
+                    photo = ImageTk.PhotoImage(img)
+                else:
+                    photo = None
+            except:
+                photo = None
+            btn = ctk.CTkButton(grid, text=name, image=photo, compound="top",
+                                width=160, height=150, font=("Helvetica", 18))
+            btn.grid(row=i // 3, column=i % 3, padx=15, pady=15)
+
+        ctk.CTkButton(frame, text="Back", command=self._build_main_menu).pack(pady=30)
+
+    # =============== Webcam & Blink Processing ===============
+    def _process_frame(self):
+        ret, frame = self.cap.read()
+        if ret:
+            blink_event = self.detector.detect_blink(frame)
+            if blink_event:
+                self.natasha.speak(f"Blink detected: {blink_event}")
+                if blink_event == "single":
+                    self.open_food()
+                elif blink_event == "double":
+                    self.open_drinks()
+                elif blink_event == "long":
+                    self.open_other()
+
+        self.root.after(10, self._process_frame)
+
+# =============== RUN APP ===============
+if __name__ == "__main__":
+    GazeSpeakApp()

@@ -1,1 +1,0 @@
-# GazeSpeak-A-Communication-Interface-for-Paralyzed-Patients
